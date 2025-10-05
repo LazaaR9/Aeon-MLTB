@@ -1,6 +1,7 @@
 from asyncio import create_subprocess_exec, create_subprocess_shell
 from os import environ
 
+import aiohttp
 from aiofiles import open as aiopen
 from aiofiles.os import makedirs, remove
 from aiofiles.os import path as aiopath
@@ -30,6 +31,7 @@ from .torrent_manager import TorrentManager
 
 
 async def update_qb_options():
+    """Updates qBittorrent options either from current preferences or saved configuration."""
     if not qbit_options:
         opt = await TorrentManager.qbittorrent.app.preferences()
         qbit_options.update(opt)
@@ -46,6 +48,7 @@ async def update_qb_options():
 
 
 async def update_aria2_options():
+    """Updates Aria2c global options either from current settings or saved configuration."""
     if not aria2_options:
         op = await TorrentManager.aria2.getGlobalOption()
         aria2_options.update(op)
@@ -54,11 +57,17 @@ async def update_aria2_options():
 
 
 async def update_nzb_options():
+    """Updates NZB options from Sabnzbd client configuration."""
     no = (await sabnzbd_client.get_config())["config"]["misc"]
     nzb_options.update(no)
 
 
 async def load_settings():
+    """Loads bot settings from the database (if DATABASE_URL is set)
+    and applies them to the current runtime configuration.
+    This includes deployment configs, general configs, private files,
+    and user-specific data like thumbnails and rclone configs.
+    """
     if not Config.DATABASE_URL:
         return
     for p in ["thumbnails", "tokens", "rclone"]:
@@ -172,7 +181,7 @@ async def load_settings():
                         await f.write(row["TOKEN_PICKLE"])
                     row["TOKEN_PICKLE"] = token_path
                 user_data[uid] = row
-            LOGGER.info("Users data has been imported from Database")
+            LOGGER.info("User data has been imported from the Database.")
 
         if await database.db.rss[BOT_ID].find_one():
             rows = database.db.rss[BOT_ID].find({})
@@ -180,10 +189,11 @@ async def load_settings():
                 user_id = row["_id"]
                 del row["_id"]
                 rss_dict[user_id] = row
-            LOGGER.info("Rss data has been imported from Database.")
+            LOGGER.info("RSS data has been imported from the Database.")
 
 
 async def save_settings():
+    """Saves the current bot configuration to the database if DATABASE_URL is set."""
     if database.db is None:
         return
     config_dict = Config.get_all()
@@ -211,6 +221,11 @@ async def save_settings():
 
 
 async def update_variables():
+    """Updates various global configuration variables and lists based on the
+    loaded Config values. This includes setting up authorized chats, sudo users,
+    excluded extensions, drive lists, and attempting to determine the BASE_URL
+    if running on Heroku.
+    """
     if (
         Config.LEECH_SPLIT_SIZE > TgClient.MAX_SPLIT_SIZE
         or Config.LEECH_SPLIT_SIZE == 2097152000
@@ -258,12 +273,46 @@ async def update_variables():
                 drives_ids.append(temp[1])
                 drives_names.append(temp[0].replace("_", " "))
                 if len(temp) > 2:
-                    index_urls.append(temp[2])
+                    index_urls.append(temp[2].strip("/"))
                 else:
                     index_urls.append("")
 
+    if Config.HEROKU_APP_NAME and Config.HEROKU_API_KEY:
+        headers = {
+            "Accept": "application/vnd.heroku+json; version=3",
+            "Authorization": f"Bearer {Config.HEROKU_API_KEY}",
+        }
+
+        urls = [
+            f"https://api.heroku.com/teams/apps/{Config.HEROKU_APP_NAME}",
+            f"https://api.heroku.com/apps/{Config.HEROKU_APP_NAME}",
+        ]
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            for url in urls:
+                try:
+                    async with session.get(url) as response:
+                        response.raise_for_status()
+                        app_data = await response.json()
+                        if web_url := app_data.get("web_url"):
+                            Config.set("BASE_URL", web_url.rstrip("/"))
+                            return
+                except Exception as e:
+                    LOGGER.error(f"BASE_URL error: {e}")
+                    continue
+
 
 async def load_configurations():
+    """Performs initial setup for configurations like .netrc,
+    starts the Gunicorn web server, extracts JDownloader config if present,
+    loads shorteners, and sets up service accounts if accounts.zip exists.
+    """
+
+    process = await create_subprocess_shell(
+        "uv pip install -U truelink",
+    )
+    await process.wait()
+
     if not await aiopath.exists(".netrc"):
         async with aiopen(".netrc", "w"):
             pass
@@ -273,7 +322,7 @@ async def load_configurations():
         )
     ).wait()
 
-    PORT = environ.get("PORT") or environ.get("BASE_URL_PORT", 80)
+    PORT = int(environ.get("PORT") or environ.get("BASE_URL_PORT") or "80")
     await create_subprocess_shell(
         f"gunicorn -k uvicorn.workers.UvicornWorker -w 1 web.wserver:app --bind 0.0.0.0:{PORT}",
     )

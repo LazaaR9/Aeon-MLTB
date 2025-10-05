@@ -24,20 +24,23 @@ class JDownloader(MyJdApi):
 
     @new_task
     async def boot(self):
+        """Initializes and starts the JDownloader process,
+        configuring it with credentials and necessary settings.
+        """
         await cmd_exec(["pkill", "-9", "-f", "java"])
         if not Config.JD_EMAIL or not Config.JD_PASS:
             self.is_connected = False
             self.error = "JDownloader Credentials not provided!"
             return
-        self.error = "Connecting... Try agin after couple of seconds"
+        self.error = "Connecting... Try again after a few seconds."
         self._device_name = f"{randint(0, 1000)}@{TgClient.NAME}"
         if await path.exists("/JDownloader/logs"):
             LOGGER.info(
-                "Starting JDownloader... This might take up to 10 sec and might restart once if update available!",
+                "Starting JDownloader... This might take up to 10 seconds and might restart once if an update is available.",
             )
         else:
             LOGGER.info(
-                "Starting JDownloader... This might take up to 8 sec and might restart once after build!",
+                "Starting JDownloader... This might take up to 8 seconds and might restart once after build.",
             )
         jdata = {
             "autoconnectenabledv2": True,
@@ -60,13 +63,13 @@ class JDownloader(MyJdApi):
             "localapiserverheaderxxssprotection": "1; mode=block",
         }
         await makedirs("/JDownloader/cfg", exist_ok=True)
-        with open(
+        with open(  # noqa: ASYNC230
             "/JDownloader/cfg/org.jdownloader.api.myjdownloader.MyJDownloaderSettings.json",
             "w",
         ) as sf:
             sf.truncate(0)
             dump(jdata, sf)
-        with open(
+        with open(  # noqa: ASYNC230
             "/JDownloader/cfg/org.jdownloader.api.RemoteAPIConfig.json",
             "w",
         ) as rf:

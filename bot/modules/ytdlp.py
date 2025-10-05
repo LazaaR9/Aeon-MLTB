@@ -340,20 +340,42 @@ class YtDlp(TaskListener):
 
         arg_parser(input_list[1:], args)
 
+        self.youtube_upload_mode = self.user_dict.get(
+            "YT_DEFAULT_FOLDER_MODE", "playlist"
+        )
+
+        self.yt_privacy = None
+        self.yt_mode = None
+        self.yt_tags = None
+        self.yt_category = None
+        self.yt_description = None
+
+        if self.up_dest and self.up_dest.startswith("yt:"):
+            self.raw_up_dest = "yt"
+            parts = self.up_dest.split(":", 6)[1:]
+
+            if len(parts) > 0 and parts[0]:
+                self.yt_privacy = parts[0]
+            if len(parts) > 1 and parts[1]:
+                if parts[1] in ["playlist", "individual", "playlist_and_individual"]:
+                    self.yt_mode = parts[1]
+                elif parts[1]:
+                    LOGGER.warning(
+                        f"Invalid YouTube mode override '{parts[1]}' in -up. Ignoring mode override."
+                    )
+            if len(parts) > 2 and parts[2]:
+                self.yt_tags = parts[2]
+            if len(parts) > 3 and parts[3]:
+                self.yt_category = parts[3]
+            if len(parts) > 4 and parts[4]:
+                self.yt_description = parts[4]
+            if len(parts) > 5 and parts[5]:
+                self.yt_playlist_id = parts[5]
+
         try:
             self.multi = int(args["-i"])
         except Exception:
             self.multi = 0
-
-        try:
-            if args["-ff"]:
-                if isinstance(args["-ff"], set):
-                    self.ffmpeg_cmds = args["-ff"]
-                else:
-                    self.ffmpeg_cmds = eval(args["-ff"])
-        except Exception as e:
-            self.ffmpeg_cmds = None
-            LOGGER.error(e)
 
         try:
             opt = eval(args["-opt"]) if args["-opt"] else {}
@@ -361,9 +383,11 @@ class YtDlp(TaskListener):
             LOGGER.error(e)
             opt = {}
 
+        self.ffmpeg_cmds = args["-ff"]
         self.select = args["-s"]
         self.name = args["-n"]
         self.up_dest = args["-up"]
+        self.raw_up_dest = args["-up"]
         self.rc_flags = args["-rcf"]
         self.link = args["link"]
         self.compress = args["-z"]

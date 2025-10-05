@@ -1,4 +1,4 @@
-# ruff: noqa: E402
+# ruff: noqa: E402, PLC0415
 from asyncio import gather
 
 from pyrogram.types import BotCommand
@@ -6,7 +6,6 @@ from pyrogram.types import BotCommand
 from . import LOGGER, bot_loop
 from .core.config_manager import Config, SystemEnv
 
-# Initialize Configurations
 LOGGER.info("Loading config...")
 Config.load()
 SystemEnv.load()
@@ -18,36 +17,34 @@ bot_loop.run_until_complete(load_settings())
 from .core.aeon_client import TgClient
 from .helper.telegram_helper.bot_commands import BotCommands
 
-# Commands and Descriptions
 COMMANDS = {
     "MirrorCommand": "- Start mirroring",
     "LeechCommand": "- Start leeching",
-    "JdMirrorCommand": "- Mirror using Jdownloader",
-    "JdLeechCommand": "- Leech using jdownloader",
-    "NzbMirrorCommand": "- Mirror nzb files",
-    "NzbLeechCommand": "- Leech nzb files",
-    "YtdlCommand": "- Mirror yt-dlp supported link",
-    "YtdlLeechCommand": "- Leech through yt-dlp supported link",
+    "JdMirrorCommand": "- Mirror using JDownloader",
+    "JdLeechCommand": "- Leech using JDownloader",
+    "NzbMirrorCommand": "- Mirror NZB files",
+    "NzbLeechCommand": "- Leech NZB files",
+    "YtdlCommand": "- Mirror link using yt-dlp",
+    "YtdlLeechCommand": "- Leech link using yt-dlp",
     "CloneCommand": "- Copy file/folder to Drive",
-    "MediaInfoCommand": "- Get mediainfo",
-    "ForceStartCommand": "- Start task from queue",
+    "MediaInfoCommand": "- Get media information",
+    "SoxCommand": "- Get audio spectrum",
+    "ForceStartCommand": "- Force start a task from queue",
     "CountCommand": "- Count file/folder on Google Drive",
     "ListCommand": "- Search in Drive",
-    "SearchCommand": "- Search in Torrent",
+    "SearchCommand": "- Search for torrents",
     "UserSetCommand": "- User settings",
-    "StatusCommand": "- Get mirror status message",
-    "StatsCommand": "- Check Bot & System stats",
-    "CancelAllCommand": "- Cancel all tasks added by you to the bot",
+    "StatusCommand": "- Show mirror status",
+    "StatsCommand": "- Show Bot and System stats",
+    "CancelAllCommand": "- Cancel all your tasks",
     "HelpCommand": "- Get detailed help",
-    "SpeedTest": "- Get speedtest result",
+    "SpeedTest": "- Run a speedtest",
     "BotSetCommand": "- [ADMIN] Open Bot settings",
-    "LogCommand": "- [ADMIN] View log",
+    "LogCommand": "- [ADMIN] View bot log",
     "RestartCommand": "- [ADMIN] Restart the bot",
-    # "RestartSessionsCommand": "- [ADMIN] Restart the session instead of the bot",
 }
 
 
-# Setup Commands
 COMMAND_OBJECTS = [
     BotCommand(
         getattr(BotCommands, cmd)[0]
@@ -59,13 +56,11 @@ COMMAND_OBJECTS = [
 ]
 
 
-# Set Bot Commands
 async def set_commands():
     if Config.SET_COMMANDS:
         await TgClient.bot.set_bot_commands(COMMAND_OBJECTS)
 
 
-# Main Function
 async def main():
     from .core.startup import (
         load_configurations,
@@ -122,6 +117,5 @@ create_help_buttons()
 add_handlers()
 
 
-# Run Bot
 LOGGER.info("Bot Started!")
 bot_loop.run_forever()

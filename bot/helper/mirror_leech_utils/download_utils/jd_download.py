@@ -151,7 +151,7 @@ async def add_jd_download(listener, path):
                 content = b64encode(content)
                 await jdownloader.device.linkgrabber.add_container(
                     "DLC",
-                    f";base64,{content.decode()}",
+                    f"data:;base64,{content.decode()}",
                 )
             else:
                 await jdownloader.device.linkgrabber.add_links(
@@ -159,7 +159,8 @@ async def add_jd_download(listener, path):
                         {
                             "autoExtract": False,
                             "links": listener.link,
-                            "packageName": listener.name or None,
+                            "deepDecrypt": True,
+                            "overwritePackagizerRules": listener.join,
                         },
                     ],
                 )
@@ -173,7 +174,7 @@ async def add_jd_download(listener, path):
             remove_unknown = False
             name = ""
             error = ""
-            while (time() - start_time) < 60:
+            while (time() - start_time) < 90:
                 queued_downloads = (
                     await jdownloader.device.linkgrabber.query_packages(
                         [
@@ -201,18 +202,6 @@ async def add_jd_download(listener, path):
                         LOGGER.error(error)
                         corrupted_packages.append(pack["uuid"])
                         continue
-                    save_to = pack["saveTo"]
-                    if not name:
-                        if save_to.startswith(default_path):
-                            name = save_to.replace(default_path, "", 1).split(
-                                "/",
-                                1,
-                            )[0]
-                        else:
-                            name = save_to.replace(f"{path}/", "", 1).split("/", 1)[
-                                0
-                            ]
-                        name = name[:255]
 
                     if (
                         pack.get("tempUnknownCount", 0) > 0
@@ -223,6 +212,9 @@ async def add_jd_download(listener, path):
 
                     listener.size += pack.get("bytesTotal", 0)
                     online_packages.append(pack["uuid"])
+                    if not name:
+                        name = pack.get("name", "").replace("/", "").split("/")[0]
+                    save_to = pack["saveTo"]
                     if save_to.startswith(default_path):
                         save_to = trim_path(save_to)
                         await jdownloader.device.linkgrabber.set_download_directory(
@@ -231,14 +223,6 @@ async def add_jd_download(listener, path):
                         )
 
                 if online_packages:
-                    if listener.join and len(online_packages) > 1:
-                        listener.name = "Joined Packages"
-                        await jdownloader.device.linkgrabber.move_to_new_package(
-                            listener.name,
-                            f"{path}/{listener.name}",
-                            package_ids=online_packages,
-                        )
-                        continue
                     break
             else:
                 error = (

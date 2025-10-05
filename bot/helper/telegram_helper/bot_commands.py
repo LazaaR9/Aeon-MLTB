@@ -22,7 +22,7 @@ class BotCommands:
     ForceStartCommand = [f"forcestart{i}", f"fs{i}"]
     ListCommand = f"list{i}"
     SearchCommand = f"search{i}"
-    HydraSearchCommamd = f"nzbsearch{i}"
+    HydraSearchCommand = f"nzbsearch{i}"
     StatusCommand = [f"status{i}", "statusall"]
     UsersCommand = f"users{i}"
     AuthorizeCommand = f"auth{i}"
@@ -31,7 +31,6 @@ class BotCommands:
     RmSudoCommand = f"rmsudo{i}"
     PingCommand = f"ping{i}"
     RestartCommand = [f"restart{i}", "restartall"]
-    RestartSessionsCommand = f"restartses{i}"
     StatsCommand = f"stats{i}"
     HelpCommand = f"help{i}"
     LogCommand = f"log{i}"
@@ -45,3 +44,4 @@ class BotCommands:
     BroadcastCommand = [f"broadcast{i}", "broadcastall"]
     SelectCommand = f"sel{i}"
     RssCommand = f"rss{i}"
+    SoxCommand = [f"spectrum{i}", f"sox{i}"]

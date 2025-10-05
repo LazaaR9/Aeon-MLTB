@@ -180,11 +180,6 @@ def add_handlers():
             BotCommands.YtdlLeechCommand,
             CustomFilters.authorized,
         ),
-        #    "restart_sessions": (
-        #        restart_sessions,
-        #        BotCommands.RestartSessionsCommand,
-        #        CustomFilters.sudo,
-        #    ),
         "mediainfo": (
             mediainfo,
             BotCommands.MediaInfoCommand,
@@ -212,7 +207,12 @@ def add_handlers():
         ),
         "hydra_search": (
             hydra_search,
-            BotCommands.HydraSearchCommamd,
+            BotCommands.HydraSearchCommand,
+            CustomFilters.authorized,
+        ),
+        "spectrum_handler": (
+            spectrum_handler,
+            BotCommands.SoxCommand,
             CustomFilters.authorized,
         ),
     }

@@ -13,6 +13,7 @@ from pyrogram.errors import (
 from pyrogram.types import InputMediaPhoto
 
 from bot import (
+    DOWNLOAD_DIR,
     LOGGER,
     intervals,
     status_dict,
@@ -83,32 +84,32 @@ async def edit_message(
     markdown=False,
     block=True,
 ):
-    parse_mode = enums.ParseMode.MARKDOWN if markdown else enums.ParseMode.HTML
+    # parse_mode = enums.ParseMode.MARKDOWN if markdown else enums.ParseMode.HTML
     try:
         if message.media:
             if photo:
                 return await message.edit_media(
                     InputMediaPhoto(photo, text),
                     reply_markup=buttons,
-                    parse_mode=parse_mode,
+                    # parse_mode=parse_mode,
                 )
             return await message.edit_caption(
                 caption=text,
                 reply_markup=buttons,
-                parse_mode=parse_mode,
+                # parse_mode=parse_mode,
             )
         await message.edit(
             text=text,
             disable_web_page_preview=True,
             reply_markup=buttons,
-            parse_mode=parse_mode,
+            # parse_mode=parse_mode,
         )
     except FloodWait as f:
         LOGGER.warning(str(f))
         if not block:
             return message
         await sleep(f.value * 1.2)
-        return await edit_message(message, text, buttons, photo, markdown)
+        return await edit_message(message, text, buttons, photo)
     except (MessageNotModified, MessageEmpty):
         pass
     except Exception as e:
@@ -196,7 +197,7 @@ async def get_tg_link_message(link, user_id=""):
             user_session = session_cache[user_id]
         else:
             user_dict = user_data.get(user_id, {})
-            session_string = user_dict.get("session_string")
+            session_string = user_dict.get("USER_SESSION")
             if session_string:
                 user_session = Client(
                     f"session_{user_id}",
@@ -278,6 +279,11 @@ async def get_tg_link_message(link, user_id=""):
             return (links, user_session) if links else (user_message, user_session)
         return None, None
     raise TgLinkException("Private: Please report!")
+
+
+async def temp_download(msg):
+    path = f"{DOWNLOAD_DIR}temp"
+    return await msg.download(file_name=f"{path}/")
 
 
 async def update_status_message(sid, force=False):

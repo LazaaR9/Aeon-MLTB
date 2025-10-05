@@ -1,9 +1,11 @@
 import contextlib
 import os
 from asyncio import gather, sleep
+from collections import Counter
+from copy import deepcopy
 from os import path as ospath
 from os import walk
-from re import IGNORECASE, sub
+from re import IGNORECASE, findall, sub
 from secrets import token_hex
 from shlex import split
 
@@ -63,11 +65,15 @@ from .telegram_helper.message_utils import (
     get_tg_link_message,
     send_message,
     send_status_message,
+    temp_download,
 )
 
 
 class TaskConfig:
+    """Holds all configuration and state for a single mirror/leech task."""
+
     def __init__(self):
+        """Initializes the TaskConfig object based on the incoming message."""
         self.mid = self.message.id
         self.user = self.message.from_user or self.message.sender_chat
         self.user_id = self.user.id
@@ -76,6 +82,7 @@ class TaskConfig:
         self.up_dir = ""
         self.link = ""
         self.up_dest = ""
+        self.raw_up_dest = ""
         self.rc_flags = ""
         self.tag = ""
         self.name = ""
@@ -131,6 +138,13 @@ class TaskConfig:
         self.files_to_proceed = []
         self.is_super_chat = self.message.chat.type.name in ["SUPERGROUP", "CHANNEL"]
 
+        self.yt_privacy = None
+        self.yt_mode = "playlist"
+        self.yt_tags = None
+        self.yt_category = None
+        self.yt_description = None
+        self.yt_playlist_id = None
+
     def get_token_path(self, dest):
         if dest.startswith("mtp:"):
             return f"tokens/{self.user_id}.pickle"
@@ -148,12 +162,13 @@ class TaskConfig:
         )
 
     async def is_token_exists(self, path, status):
+        """Checks if Rclone config or GDrive token exists for the given path and operation status."""
         if is_rclone_path(path):
             config_path = self.get_config_path(path)
             if config_path != "rclone.conf" and status == "up":
                 self.private_link = True
             if not await aiopath.exists(config_path):
-                raise ValueError(f"Rclone Config: {config_path} not Exists!")
+                raise ValueError(f"Rclone Config: {config_path} does not exist!")
         elif (status == "dl" and is_gdrive_link(path)) or (
             status == "up" and is_gdrive_id(path)
         ):
@@ -161,9 +176,18 @@ class TaskConfig:
             if token_path.startswith("tokens/") and status == "up":
                 self.private_link = True
             if not await aiopath.exists(token_path):
-                raise ValueError(f"NO TOKEN! {token_path} not Exists!")
+                raise ValueError(f"Token not found! {token_path} does not exist!")
 
     async def before_start(self):
+        """Performs pre-task setup including:
+        - Name substitution, metadata, watermark settings.
+        - Excluded extensions.
+        - Rclone flags.
+        - Path validation and token checks for links and upload destinations.
+        - User transmission and hybrid leech settings.
+        - FFmpeg command processing.
+        - Leech specific settings like split size and document type.
+        """
         self.name_sub = (
             self.name_sub
             or self.user_dict.get("NAME_SUBSTITUTE", False)
@@ -233,29 +257,42 @@ class TaskConfig:
         if self.user_dict.get("UPLOAD_PATHS", False):
             if self.up_dest in self.user_dict["UPLOAD_PATHS"]:
                 self.up_dest = self.user_dict["UPLOAD_PATHS"][self.up_dest]
-        elif "UPLOAD_PATHS" not in self.user_dict and Config.UPLOAD_PATHS:
-            if self.up_dest in Config.UPLOAD_PATHS:
-                self.up_dest = Config.UPLOAD_PATHS[self.up_dest]
+        elif (
+            "UPLOAD_PATHS" not in self.user_dict
+            and Config.UPLOAD_PATHS
+            and self.up_dest in Config.UPLOAD_PATHS
+        ):
+            self.up_dest = Config.UPLOAD_PATHS[self.up_dest]
 
         if self.ffmpeg_cmds and not isinstance(self.ffmpeg_cmds, list):
             if self.user_dict.get("FFMPEG_CMDS", None):
-                ffmpeg_dict = self.user_dict["FFMPEG_CMDS"]
-                self.ffmpeg_cmds = [
-                    value
-                    for key in list(self.ffmpeg_cmds)
-                    if key in ffmpeg_dict
-                    for value in ffmpeg_dict[key]
-                ]
+                ffmpeg_dict = deepcopy(self.user_dict["FFMPEG_CMDS"])
             elif "FFMPEG_CMDS" not in self.user_dict and Config.FFMPEG_CMDS:
-                ffmpeg_dict = Config.FFMPEG_CMDS
-                self.ffmpeg_cmds = [
-                    value
-                    for key in list(self.ffmpeg_cmds)
-                    if key in ffmpeg_dict
-                    for value in ffmpeg_dict[key]
-                ]
+                ffmpeg_dict = deepcopy(Config.FFMPEG_CMDS)
             else:
-                self.ffmpeg_cmds = None
+                ffmpeg_dict = None
+            if ffmpeg_dict is None:
+                self.ffmpeg_cmds = ffmpeg_dict
+            else:
+                cmds = []
+                for key in list(self.ffmpeg_cmds):
+                    if isinstance(key, tuple):
+                        cmds.extend(list(key))
+                    elif key in ffmpeg_dict:
+                        for ind, vl in enumerate(ffmpeg_dict[key]):
+                            if variables := set(findall(r"\{(.*?)\}", vl)):
+                                ff_values = (
+                                    self.user_dict.get("FFMPEG_VARIABLES", {})
+                                    .get(key, {})
+                                    .get(str(ind), {})
+                                )
+                                if Counter(list(variables)) == Counter(
+                                    list(ff_values.keys())
+                                ):
+                                    cmds.append(vl.format(**ff_values))
+                            else:
+                                cmds.append(vl)
+                self.ffmpeg_cmds = cmds
         if not self.is_leech:
             self.stop_duplicate = self.user_dict.get("STOP_DUPLICATE") or (
                 "STOP_DUPLICATE" not in self.user_dict and Config.STOP_DUPLICATE
@@ -263,6 +300,7 @@ class TaskConfig:
             default_upload = (
                 self.user_dict.get("DEFAULT_UPLOAD", "") or Config.DEFAULT_UPLOAD
             )
+
             if (not self.up_dest and default_upload == "rc") or self.up_dest == "rc":
                 self.up_dest = (
                     self.user_dict.get("RCLONE_PATH") or Config.RCLONE_PATH
@@ -271,8 +309,20 @@ class TaskConfig:
                 not self.up_dest and default_upload == "gd"
             ) or self.up_dest == "gd":
                 self.up_dest = self.user_dict.get("GDRIVE_ID") or Config.GDRIVE_ID
-            if not self.up_dest:
-                raise ValueError("No Upload Destination!")
+
+            chosen_service = ""
+            if self.up_dest == "yt" or (
+                self.up_dest and self.up_dest.startswith("yt:")
+            ):
+                chosen_service = "yt"
+                self.resolve_youtube_settings()
+            else:
+                chosen_service = default_upload
+
+            if chosen_service not in ["yt"] and not self.up_dest:
+                raise ValueError(
+                    f"No Upload Destination path/ID for service '{chosen_service}'! Please set an upload path or a default for it."
+                )
             if is_gdrive_id(self.up_dest):
                 if not self.up_dest.startswith(
                     ("mtp:", "tp:", "sa:"),
@@ -285,8 +335,6 @@ class TaskConfig:
                 ):
                     self.up_dest = f"mrcc:{self.up_dest}"
                 self.up_dest = self.up_dest.strip("/")
-            else:
-                raise ValueError("Wrong Upload Destination!")
 
             if self.up_dest not in ["rcl", "gdl"]:
                 await self.is_token_exists(self.up_dest, "up")
@@ -321,6 +369,7 @@ class TaskConfig:
                 )
                 if not is_gdrive_id(self.up_dest):
                     raise ValueError(self.up_dest)
+
             elif self.is_clone:
                 if is_gdrive_link(self.link) and self.get_token_path(
                     self.link,
@@ -331,11 +380,9 @@ class TaskConfig:
                 ) != self.get_config_path(self.up_dest):
                     raise ValueError("You must use the same config to clone!")
         else:
-            self.up_dest = (
-                self.up_dest
-                or self.user_dict.get("LEECH_DUMP_CHAT")
-                or Config.LEECH_DUMP_CHAT
-            )
+            chat = Config.LEECH_DUMP_CHAT
+            main_chat = chat[0] if isinstance(chat, list) and chat else chat or ""
+            self.up_dest = self.up_dest or main_chat
             self.hybrid_leech = TgClient.IS_PREMIUM_USER and (
                 self.user_dict.get("HYBRID_LEECH")
                 or (Config.HYBRID_LEECH and "HYBRID_LEECH" not in self.user_dict)
@@ -472,6 +519,78 @@ class TaskConfig:
                     await create_thumb(msg) if msg.photo or msg.document else ""
                 )
 
+    def resolve_youtube_settings(self):
+        def get_cleaned_value(value, default, allowed=None, to_lower=False):
+            val = value if value is not None else self.user_dict.get(default)
+            if val:
+                val = val.strip()
+                if to_lower:
+                    val = val.lower()
+                if not allowed or val in allowed:
+                    return val
+            return None
+
+        self.yt_privacy = (
+            get_cleaned_value(
+                self.yt_privacy,
+                "YT_DEFAULT_PRIVACY",
+                allowed=["private", "public", "unlisted"],
+                to_lower=True,
+            )
+            or self.yt_privacy
+        )
+        if not self.yt_privacy:
+            self.yt_privacy = "unlisted"
+
+        self.yt_mode = (
+            get_cleaned_value(
+                self.yt_mode,
+                "YT_DEFAULT_FOLDER_MODE",
+                allowed=["playlist", "individual", "playlist_and_individual"],
+            )
+            or self.yt_mode
+        )
+        if not self.yt_mode:
+            self.yt_mode = "playlist"
+
+        tags_str = (
+            self.yt_tags
+            if self.yt_tags is not None
+            else self.user_dict.get("YT_DEFAULT_TAGS")
+        )
+        if tags_str is not None:
+            tags_str = tags_str.strip()
+            if tags_str.lower() == "none":
+                self.yt_tags = []
+            else:
+                self.yt_tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+
+        self.yt_category = (
+            get_cleaned_value(self.yt_category, "YT_DEFAULT_CATEGORY", allowed=None)
+            if (
+                get_cleaned_value(
+                    self.yt_category,
+                    "YT_DEFAULT_CATEGORY",
+                    allowed=None,
+                    to_lower=False,
+                )
+                or ""
+            ).isdigit()
+            else self.yt_category
+        )
+
+        description = (
+            self.yt_description
+            if self.yt_description is not None
+            else self.user_dict.get("YT_DEFAULT_DESCRIPTION")
+        )
+        self.yt_description = (
+            description.strip() if description is not None else self.yt_description
+        )
+
+        if self.yt_playlist_id and self.yt_playlist_id.strip():
+            self.yt_playlist_id = self.yt_playlist_id.strip()
+
     async def get_tag(self, text: list):
         if len(text) > 1 and text[1].startswith("Tag: "):
             user_info = text[1].split("Tag: ")
@@ -506,7 +625,7 @@ class TaskConfig:
         if self.multi_tag and self.multi_tag not in multi_tags:
             await send_message(
                 self.message,
-                f"{self.tag} Multi Task has been cancelled!",
+                f"{self.tag} Multi-task has been cancelled!",
             )
             await send_status_message(self.message)
             async with task_dict_lock:
@@ -594,13 +713,14 @@ class TaskConfig:
                 self.multi_tag,
                 self.options,
             ).new_event()
-        except Exception:
+        except Exception as e:
             await send_message(
                 self.message,
-                "Reply to text file or to telegram message that have links seperated by new line!",
+                f"Reply to a text file or a Telegram message with links separated by new lines. Error: {e}",
             )
 
     async def proceed_extract(self, dl_path, gid):
+        """Extracts archives from the downloaded path."""
         pswd = self.extract if isinstance(self.extract, str) else ""
         self.files_to_proceed = []
         if self.is_file and is_archive(dl_path):
@@ -621,6 +741,7 @@ class TaskConfig:
 
         if not self.files_to_proceed:
             return dl_path
+        t_path = dl_path
         sevenz = SevenZ(self)
         LOGGER.info(f"Extracting: {self.name}")
         async with task_dict_lock:
@@ -654,10 +775,14 @@ class TaskConfig:
                             await remove(del_path)
                         except Exception:
                             self.is_cancelled = True
+        if self.proceed_count == 0:
+            LOGGER.info("No extractable files found!")
         return t_path if self.is_file and code == 0 else dl_path
 
     async def proceed_ffmpeg(self, dl_path, gid):
+        """Processes media files using FFmpeg commands defined in the task."""
         checked = False
+        inputs = {}
         cmds = [
             [part.strip() for part in split(item) if part.strip()]
             for item in self.ffmpeg_cmds
@@ -682,8 +807,13 @@ class TaskConfig:
                     delete_files = True
                 else:
                     delete_files = False
-                index = cmd.index("-i")
-                input_file = cmd[index + 1]
+                input_indexes = [
+                    index for index, value in enumerate(cmd) if value == "-i"
+                ]
+                for index in input_indexes:
+                    if cmd[index + 1].startswith("mltb"):
+                        input_file = cmd[index + 1]
+                        break
                 if input_file.lower().endswith(".video"):
                     ext = "video"
                 elif input_file.lower().endswith(".audio"):
@@ -725,8 +855,15 @@ class TaskConfig:
                         self.progress = False
                         await cpu_eater_lock.acquire()
                         self.progress = True
-                    LOGGER.info(f"Running ffmpeg cmd for: {file_path}")
-                    cmd[index + 1] = file_path
+                    LOGGER.info(f"Running FFmpeg command for: {file_path}")
+                    for index in input_indexes:
+                        if cmd[index + 1].startswith("mltb"):
+                            cmd[index + 1] = file_path
+                        elif is_telegram_link(cmd[index + 1]):
+                            msg = (await get_tg_link_message(cmd[index + 1]))[0]
+                            file_dir = await temp_download(msg)
+                            inputs[index + 1] = file_dir
+                            cmd[index + 1] = file_dir
                     self.subsize = self.size
                     res = await ffmpeg.ffmpeg_cmds(cmd, file_path)
                     if res:
@@ -789,7 +926,7 @@ class TaskConfig:
                                 self.progress = False
                                 await cpu_eater_lock.acquire()
                                 self.progress = True
-                            LOGGER.info(f"Running ffmpeg cmd for: {f_path}")
+                            LOGGER.info(f"Running FFmpeg command for: {f_path}")
                             self.subsize = await get_path_size(f_path)
                             self.subname = file_
                             res = await ffmpeg.ffmpeg_cmds(var_cmd, f_path)
@@ -801,12 +938,17 @@ class TaskConfig:
                                         newname = file_name.split(".", 1)[-1]
                                         newres = ospath.join(dirpath, newname)
                                         await move(res[0], newres)
+                for inp in inputs.values():
+                    if "/temp/" in inp and aiopath.exists(inp):
+                        await remove(inp)
         finally:
             if checked:
                 cpu_eater_lock.release()
         return dl_path
 
     async def substitute(self, dl_path):
+        """Performs name substitution on downloaded files/folders based on task settings."""
+
         def perform_substitution(name, substitutions):
             for substitution in substitutions:
                 sen = False
@@ -844,7 +986,8 @@ class TaskConfig:
             if not new_name:
                 return dl_path
             new_path = ospath.join(up_dir, new_name)
-            await move(dl_path, new_path)
+            with contextlib.suppress(Exception):
+                await move(dl_path, new_path)
             return new_path
         for dirpath, _, files in await sync_to_async(walk, dl_path, topdown=False):
             for file_ in files:
@@ -852,10 +995,13 @@ class TaskConfig:
                 new_name = perform_substitution(file_, self.name_sub)
                 if not new_name:
                     continue
-                await move(f_path, ospath.join(dirpath, new_name))
+                with contextlib.suppress(Exception):
+                    await move(f_path, ospath.join(dirpath, new_name))
         return dl_path
 
     async def remove_www_prefix(self, dl_path):
+        """Removes 'www.domain.com - ' like prefixes from filenames."""
+
         def clean_filename(name):
             return sub(
                 r"^www\.[^ ]+\s*-\s*|\s*^www\.[^ ]+\s*",
@@ -870,7 +1016,8 @@ class TaskConfig:
             if new_name == name:
                 return dl_path
             new_path = ospath.join(up_dir, new_name)
-            await move(dl_path, new_path)
+            with contextlib.suppress(Exception):
+                await move(dl_path, new_path)
             return new_path
 
         for dirpath, _, files in await sync_to_async(walk, dl_path, topdown=False):
@@ -879,11 +1026,13 @@ class TaskConfig:
                 new_name = clean_filename(file_)
                 if new_name == file_:
                     continue
-                await move(f_path, ospath.join(dirpath, new_name))
+                with contextlib.suppress(Exception):
+                    await move(f_path, ospath.join(dirpath, new_name))
 
         return dl_path
 
     async def generate_screenshots(self, dl_path):
+        """Generates screenshots for video files."""
         ss_nb = int(self.screen_shots) if isinstance(self.screen_shots, str) else 10
         if self.is_file:
             if (await get_document_type(dl_path))[0]:
@@ -912,6 +1061,7 @@ class TaskConfig:
         return dl_path
 
     async def convert_media(self, dl_path, gid):
+        """Converts video/audio files to specified formats based on task settings."""
         fvext = []
         if self.convert_video:
             vdata = self.convert_video.split()
@@ -1031,6 +1181,7 @@ class TaskConfig:
         return dl_path
 
     async def generate_sample_video(self, dl_path, gid):
+        """Generates a sample video from the input file."""
         data = (
             self.sample_video.split(":")
             if isinstance(self.sample_video, str)
@@ -1064,7 +1215,7 @@ class TaskConfig:
             self.progress = False
             async with cpu_eater_lock:
                 self.progress = True
-                LOGGER.info(f"Creating Sample video: {self.name}")
+                LOGGER.info(f"Creating sample video for: {self.name}")
                 for f_path, file_ in self.files_to_proceed.items():
                     self.proceed_count += 1
                     if self.is_file:
@@ -1088,6 +1239,7 @@ class TaskConfig:
         return dl_path
 
     async def proceed_compress(self, dl_path, gid):
+        """Compresses the downloaded file/folder into a zip archive."""
         pswd = self.compress if isinstance(self.compress, str) else ""
         if self.is_leech and self.is_file:
             new_folder = ospath.splitext(dl_path)[0]
@@ -1106,6 +1258,7 @@ class TaskConfig:
         return await sevenz.zip(dl_path, up_path, pswd)
 
     async def proceed_split(self, dl_path, gid):
+        """Splits files larger than the specified split size."""
         self.files_to_proceed = {}
         if self.is_file:
             f_size = await get_path_size(dl_path)
@@ -1153,6 +1306,7 @@ class TaskConfig:
         return None
 
     async def proceed_metadata(self, dl_path, gid):
+        """Adds metadata to MKV files based on the task's metadata key."""
         key = self.metadata
         ffmpeg = FFMpeg(self)
         checked = False
@@ -1205,7 +1359,7 @@ class TaskConfig:
                                 self.progress = False
                                 await cpu_eater_lock.acquire()
                                 self.progress = True
-                            LOGGER.info(f"Running metadata cmd for: {file_path}")
+                            LOGGER.info(f"Running metadata command for: {file_path}")
                             self.subsize = await aiopath.getsize(file_path)
                             self.subname = file_
                             res = await ffmpeg.metadata_watermark_cmds(
@@ -1221,6 +1375,7 @@ class TaskConfig:
         return dl_path
 
     async def proceed_watermark(self, dl_path, gid):
+        """Adds a text watermark to MKV video files."""
         key = self.watermark
         ffmpeg = FFMpeg(self)
         checked = False
@@ -1272,7 +1427,9 @@ class TaskConfig:
                                 self.progress = False
                                 await cpu_eater_lock.acquire()
                                 self.progress = True
-                            LOGGER.info(f"Running cmd for: {file_path}")
+                            LOGGER.info(
+                                f"Running watermark command for: {file_path}"
+                            )
                             self.subsize = await aiopath.getsize(file_path)
                             self.subname = file_
                             res = await ffmpeg.metadata_watermark_cmds(
@@ -1288,6 +1445,7 @@ class TaskConfig:
         return dl_path
 
     async def proceed_embed_thumb(self, dl_path, gid):
+        """Embeds a thumbnail into MKV video files."""
         thumb = self.e_thumb
         ffmpeg = FFMpeg(self)
         checked = False
